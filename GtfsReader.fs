@@ -1,5 +1,9 @@
 module GtfsReader
 
+open System.IO.Compression
+open FSharp.Data
+open Npgsql
+open Npgsql.FSharp
 open NetTopologySuite.Geometries
 
 type RouteType =
@@ -13,11 +17,6 @@ type RouteType =
     | Funicular = 7
     | TrolleyBus = 11
     | Monorail = 12
-
-open System.IO.Compression
-open FSharp.Data
-open Npgsql
-open Npgsql.FSharp
 
 let truncateTable database table =
     database
@@ -80,3 +79,19 @@ let readStops (connection: NpgsqlConnection) (archive: ZipArchive) =
         |> ignore
 
     transaction.Commit()
+
+let readShapePoints (connection: NpgsqlConnection) (archive: ZipArchive) =
+    let stops = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
+
+    for stop in stops.Rows do
+        connection
+        |> Sql.existingConnection
+        |> Sql.query "INSERT INTO SHAPE_POINT(shapePointIndex, shapedId, shapePointLocation) VALUES (@si, @sid, @sl)"
+        |> Sql.parameters
+            [ "@si", int(stop.GetColumn("shape_pt_sequence")) |> Sql.int
+              "@sid", stop.GetColumn("shape_id") |> Sql.text
+              "@sl",
+              NpgsqlParameter(null, Point(stop.GetColumn("shape_pt_lon") |> float, stop.GetColumn("shape_pt_lat") |> float))
+              |> Sql.parameter ]
+        |> Sql.executeNonQuery
+        |> ignore

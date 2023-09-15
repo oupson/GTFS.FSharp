@@ -27,6 +27,7 @@ let connection = dataSource |> Sql.fromDataSource |> Sql.createConnection
 
 downloadFile url savePath |> Async.RunSynchronously
 
+truncateTable connection "SHAPE_POINT"
 truncateTable connection "STOP"
 truncateTable connection "ROUTE"
 truncateTable connection "AGENCY"
@@ -35,3 +36,4 @@ let archive = new ZipArchive(new FileStream(savePath, FileMode.Open))
 readAgencies connection archive
 readRoutes connection archive
 readStops connection archive
+readShapePoints connection archive
