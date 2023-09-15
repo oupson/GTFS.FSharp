@@ -6,6 +6,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="GtfsReader.fs"/>
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
