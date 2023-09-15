@@ -6,13 +6,15 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Compile Include="GtfsReader.fs"/>
-        <Compile Include="Program.fs"/>
+        <Compile Include="GtfsReader.fs" />
+        <Compile Include="Program.fs" />
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="FSharp.Data" Version="6.3.0"/>
-        <PackageReference Include="Npgsql.FSharp" Version="5.7.0"/>
+        <PackageReference Include="FSharp.Data" Version="6.3.0" />
+        <PackageReference Include="NetTopologySuite" Version="2.5.0" />
+        <PackageReference Include="Npgsql.FSharp" Version="5.7.0" />
+        <PackageReference Include="Npgsql.NetTopologySuite" Version="7.0.6" />
     </ItemGroup>
 
 </Project>

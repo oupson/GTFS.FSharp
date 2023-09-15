@@ -1,5 +1,7 @@
 module GtfsReader
 
+open NetTopologySuite.Geometries
+
 type RouteType =
     | Tram = 0
     | Subway = 1
@@ -55,6 +57,25 @@ let readRoutes (connection: NpgsqlConnection) (archive: ZipArchive) =
               NpgsqlParameter(null, enum<RouteType> (int (route.GetColumn("route_type"))))
               |> Sql.parameter
               "@aid", route.GetColumn("agency_id") |> Sql.text ]
+        |> Sql.executeNonQuery
+        |> ignore
+
+    transaction.Commit()
+
+let readStops (connection: NpgsqlConnection) (archive: ZipArchive) =
+    let transaction = connection.BeginTransaction()
+    let stops = archive.GetEntry("stops.txt").Open() |> CsvFile.Load
+
+    for stop in stops.Rows do
+        connection
+        |> Sql.existingConnection
+        |> Sql.query "INSERT INTO STOP(stopId, stopName, stopLocation) VALUES (@id, @name, @location)"
+        |> Sql.parameters
+            [ "@id", stop.GetColumn("stop_id") |> Sql.text
+              "@name", stop.GetColumn("stop_name") |> Sql.text
+              "@location",
+              NpgsqlParameter(null, Point(stop.GetColumn("stop_lon") |> float, stop.GetColumn("stop_lat") |> float))
+              |> Sql.parameter ]
         |> Sql.executeNonQuery
         |> ignore
 
