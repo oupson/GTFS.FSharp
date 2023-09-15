@@ -81,17 +81,17 @@ let readStops (connection: NpgsqlConnection) (archive: ZipArchive) =
     transaction.Commit()
 
 let readShapePoints (connection: NpgsqlConnection) (archive: ZipArchive) =
-    let stops = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
+    let shapePoints = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
 
-    for stop in stops.Rows do
+    for shape in shapePoints.Rows do
         connection
         |> Sql.existingConnection
         |> Sql.query "INSERT INTO SHAPE_POINT(shapePointIndex, shapedId, shapePointLocation) VALUES (@si, @sid, @sl)"
         |> Sql.parameters
-            [ "@si", int(stop.GetColumn("shape_pt_sequence")) |> Sql.int
-              "@sid", stop.GetColumn("shape_id") |> Sql.text
+            [ "@si", int(shape.GetColumn("shape_pt_sequence")) |> Sql.int
+              "@sid", shape.GetColumn("shape_id") |> Sql.text
               "@sl",
-              NpgsqlParameter(null, Point(stop.GetColumn("shape_pt_lon") |> float, stop.GetColumn("shape_pt_lat") |> float))
+              NpgsqlParameter(null, Point(shape.GetColumn("shape_pt_lon") |> float, shape.GetColumn("shape_pt_lat") |> float))
               |> Sql.parameter ]
         |> Sql.executeNonQuery
         |> ignore
