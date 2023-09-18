@@ -20,6 +20,7 @@ let savePath = "/tmp/gtfs.zip"
 
 let dataSourceBuilder = NpgsqlDataSourceBuilder databaseUrl
 dataSourceBuilder.MapEnum<RouteType>("route_type") |> ignore
+dataSourceBuilder.MapEnum<TripDirection>("direction") |> ignore
 dataSourceBuilder.UseNetTopologySuite() |> ignore
 let dataSource = dataSourceBuilder.Build()
 
@@ -27,13 +28,24 @@ let connection = dataSource |> Sql.fromDataSource |> Sql.createConnection
 
 downloadFile url savePath |> Async.RunSynchronously
 
-truncateTable connection "SHAPE_POINT"
-truncateTable connection "STOP"
-truncateTable connection "ROUTE"
-truncateTable connection "AGENCY"
-
 let archive = new ZipArchive(new FileStream(savePath, FileMode.Open))
-readAgencies connection archive
-readRoutes connection archive
-readStops connection archive
-readShapePoints connection archive
+let transaction = connection.BeginTransaction()
+
+connection
+|> truncateTable "TRIP"
+|> truncateTable "SHAPE_POINT"
+|> truncateTable "STOP"
+|> truncateTable "ROUTE"
+|> truncateTable "AGENCY"
+
+|> createTemporaryTables
+
+|> readAgencies archive
+|> readRoutes archive
+|> readStops archive
+|> readShapePoints archive
+|> readCalendarDates archive
+|> readTrips archive
+|> ignore
+
+transaction.Commit()

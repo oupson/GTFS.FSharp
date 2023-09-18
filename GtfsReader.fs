@@ -1,5 +1,6 @@
 module GtfsReader
 
+open System
 open System.IO.Compression
 open FSharp.Data
 open Npgsql
@@ -18,14 +19,29 @@ type RouteType =
     | TrolleyBus = 11
     | Monorail = 12
 
-let truncateTable database table =
+type TripDirection =
+    | OneDirection = 0
+    | TheOpposite = 1
+
+let truncateTable table database =
     database
     |> Sql.existingConnection
     |> Sql.query $"TRUNCATE %s{table} RESTART IDENTITY CASCADE"
     |> Sql.executeNonQuery
     |> ignore
 
-let readAgencies (connection: NpgsqlConnection) (archive: ZipArchive) =
+    database
+
+let createTemporaryTables database =
+    database
+    |> Sql.existingConnection
+    |> Sql.query "CREATE TEMPORARY TABLE CALENDAR_DATES(serviceId TEXT, date TEXT)"
+    |> Sql.executeNonQuery
+    |> ignore
+
+    database
+
+let readAgencies (archive: ZipArchive) (connection: NpgsqlConnection) =
     let agencies = archive.GetEntry("agency.txt").Open() |> CsvFile.Load
 
     for row in agencies.Rows do
@@ -39,8 +55,9 @@ let readAgencies (connection: NpgsqlConnection) (archive: ZipArchive) =
         |> Sql.executeNonQuery
         |> ignore
 
-let readRoutes (connection: NpgsqlConnection) (archive: ZipArchive) =
-    let transaction = connection.BeginTransaction()
+    connection
+
+let readRoutes (archive: ZipArchive) (connection: NpgsqlConnection) =
     let routes = archive.GetEntry("routes.txt").Open() |> CsvFile.Load
 
     for route in routes.Rows do
@@ -59,10 +76,9 @@ let readRoutes (connection: NpgsqlConnection) (archive: ZipArchive) =
         |> Sql.executeNonQuery
         |> ignore
 
-    transaction.Commit()
+    connection
 
-let readStops (connection: NpgsqlConnection) (archive: ZipArchive) =
-    let transaction = connection.BeginTransaction()
+let readStops (archive: ZipArchive) (connection: NpgsqlConnection) =
     let stops = archive.GetEntry("stops.txt").Open() |> CsvFile.Load
 
     for stop in stops.Rows do
@@ -78,9 +94,9 @@ let readStops (connection: NpgsqlConnection) (archive: ZipArchive) =
         |> Sql.executeNonQuery
         |> ignore
 
-    transaction.Commit()
+    connection
 
-let readShapePoints (connection: NpgsqlConnection) (archive: ZipArchive) =
+let readShapePoints (archive: ZipArchive) (connection: NpgsqlConnection) =
     let shapePoints = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
 
     for shape in shapePoints.Rows do
@@ -88,10 +104,82 @@ let readShapePoints (connection: NpgsqlConnection) (archive: ZipArchive) =
         |> Sql.existingConnection
         |> Sql.query "INSERT INTO SHAPE_POINT(shapePointIndex, shapedId, shapePointLocation) VALUES (@si, @sid, @sl)"
         |> Sql.parameters
-            [ "@si", int(shape.GetColumn("shape_pt_sequence")) |> Sql.int
+            [ "@si", int (shape.GetColumn("shape_pt_sequence")) |> Sql.int
               "@sid", shape.GetColumn("shape_id") |> Sql.text
               "@sl",
-              NpgsqlParameter(null, Point(shape.GetColumn("shape_pt_lon") |> float, shape.GetColumn("shape_pt_lat") |> float))
+              NpgsqlParameter(
+                  null,
+                  Point(shape.GetColumn("shape_pt_lon") |> float, shape.GetColumn("shape_pt_lat") |> float)
+              )
               |> Sql.parameter ]
         |> Sql.executeNonQuery
         |> ignore
+
+    connection
+
+let readCalendarDates (archive: ZipArchive) (connection: NpgsqlConnection) =
+    let calendarDates = archive.GetEntry("calendar_dates.txt").Open() |> CsvFile.Load
+    let today = DateTime.Today.ToString("yyyyMMdd")
+    let tomorrow = DateTime.Today.AddDays(1).ToString("yyyyMMdd")
+
+    for dateEntry in calendarDates.Rows do
+        let date = dateEntry.GetColumn("date")
+
+        if date = today || date = tomorrow then
+            connection
+            |> Sql.existingConnection
+            |> Sql.query "INSERT INTO CALENDAR_DATES(serviceId, date) VALUES(@sid, @d)"
+            |> Sql.parameters
+                [ "@sid", dateEntry.GetColumn("service_id") |> Sql.text
+                  "@d", date |> Sql.text ]
+            |> Sql.executeNonQuery
+            |> ignore
+
+    connection
+
+let readTrips (archive: ZipArchive) (connection: NpgsqlConnection) =
+    let trips = archive.GetEntry("trips.txt").Open() |> CsvFile.Load
+
+    let headers = trips.Headers.Value
+    let haveHeadSigns = Array.contains "trip_headsign" headers
+    let haveShortNames = Array.contains "trip_short_name" headers
+    let haveShapes = Array.contains "shape_id" headers
+
+    for trip in trips.Rows do
+        let insert =
+            connection
+            |> Sql.existingConnection
+            |> Sql.query "SELECT (COUNT(serviceId) = 1) as exist FROM CALENDAR_DATES WHERE serviceId = @sid"
+            |> Sql.parameters [ "sid", trip.GetColumn("service_id") |> Sql.text ]
+            |> Sql.executeRow (fun r -> r.bool "exist")
+
+        if insert then
+            connection
+            |> Sql.existingConnection
+            |> Sql.query
+                "INSERT INTO TRIP(tripId, tripHeadSign, tripShortName, tripDirection, routeId, shapedId) VALUES (@tid, @ths, @tsn, @td, @ri, @si)"
+            |> Sql.parameters
+                [ "@tid", trip.GetColumn("trip_id") |> Sql.text
+                  "@ths",
+                  if haveHeadSigns then
+                      trip.GetColumn("trip_headsign") |> Sql.text
+                  else
+                      Sql.dbnull
+                  "@tsn",
+                  if haveShortNames then
+                      trip.GetColumn("trip_short_name") |> Sql.text
+                  else
+                      Sql.dbnull
+                  "@td",
+                  NpgsqlParameter(null, enum<TripDirection> (int (trip.GetColumn("direction_id"))))
+                  |> Sql.parameter
+                  "@ri", trip.GetColumn("route_id") |> Sql.text
+                  "@si",
+                  if haveShapes then
+                      trip.GetColumn("shape_id") |> Sql.text
+                  else
+                      Sql.dbnull ]
+            |> Sql.executeNonQuery
+            |> ignore
+
+    connection
