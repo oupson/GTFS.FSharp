@@ -42,7 +42,7 @@ let createTemporaryTables database =
     database
 
 let readAgencies (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let agencies = archive.GetEntry("agency.txt").Open() |> CsvFile.Load
+    use agencies = archive.GetEntry("agency.txt").Open() |> CsvFile.Load
 
     for row in agencies.Rows do
         connection
@@ -58,7 +58,7 @@ let readAgencies (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readRoutes (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let routes = archive.GetEntry("routes.txt").Open() |> CsvFile.Load
+    use routes = archive.GetEntry("routes.txt").Open() |> CsvFile.Load
 
     for route in routes.Rows do
         connection
@@ -79,7 +79,7 @@ let readRoutes (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readStops (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let stops = archive.GetEntry("stops.txt").Open() |> CsvFile.Load
+    use stops = archive.GetEntry("stops.txt").Open() |> CsvFile.Load
 
     for stop in stops.Rows do
         connection
@@ -97,7 +97,7 @@ let readStops (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readShapePoints (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let shapePoints = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
+    use shapePoints = archive.GetEntry("shapes.txt").Open() |> CsvFile.Load
 
     for shape in shapePoints.Rows do
         connection
@@ -118,7 +118,7 @@ let readShapePoints (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readCalendarDates (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let calendarDates = archive.GetEntry("calendar_dates.txt").Open() |> CsvFile.Load
+    use calendarDates = archive.GetEntry("calendar_dates.txt").Open() |> CsvFile.Load
     let today = DateTime.Today.ToString("yyyyMMdd")
     let tomorrow = DateTime.Today.AddDays(1).ToString("yyyyMMdd")
 
@@ -138,7 +138,7 @@ let readCalendarDates (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readTrips (archive: ZipArchive) (connection: NpgsqlConnection) =
-    let trips = archive.GetEntry("trips.txt").Open() |> CsvFile.Load
+    use trips = archive.GetEntry("trips.txt").Open() |> CsvFile.Load
 
     let headers = trips.Headers.Value
     let haveHeadSigns = Array.contains "trip_headsign" headers
