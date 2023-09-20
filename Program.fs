@@ -46,6 +46,10 @@ connection
 |> readShapePoints archive
 |> readCalendarDates archive
 |> readTrips archive
+|> readStopTimes archive
+
+|> convertData
+
 |> ignore
 
 transaction.Commit()

@@ -1,6 +1,6 @@
 module GtfsReader
 
-open System
+open System.IO
 open System.IO.Compression
 open FSharp.Data
 open Npgsql
@@ -23,6 +23,15 @@ type TripDirection =
     | OneDirection = 0
     | TheOpposite = 1
 
+let entryLineStream (entry: ZipArchiveEntry) =
+    new StreamReader(entry.Open())
+    |> Seq.unfold (fun sr ->
+        match sr.ReadLine() with
+        | null ->
+            sr.Dispose()
+            None
+        | str -> Some(str, sr))
+
 let truncateTable table database =
     database
     |> Sql.existingConnection
@@ -35,7 +44,21 @@ let truncateTable table database =
 let createTemporaryTables database =
     database
     |> Sql.existingConnection
-    |> Sql.query "CREATE TEMPORARY TABLE CALENDAR_DATES(serviceId TEXT, date TEXT)"
+    |> Sql.query "CREATE TEMPORARY TABLE GTFS_CALENDAR_DATES(service_id TEXT, date TEXT, exception_type INTEGER)"
+    |> Sql.executeNonQuery
+    |> ignore
+
+    database
+    |> Sql.existingConnection
+    |> Sql.query
+        "CREATE TEMPORARY TABLE GTFS_TRIP(route_id TEXT,service_id TEXT,trip_id TEXT,direction_id INTEGER,shape_id TEXT)"
+    |> Sql.executeNonQuery
+    |> ignore
+
+    database
+    |> Sql.existingConnection
+    |> Sql.query
+        "CREATE TEMPORARY TABLE GTFS_STOP_TIMES(trip_id TEXT,arrival_time TEXT,departure_time TEXT,stop_id TEXT,stop_sequence INTEGER,pickup_type INTEGER)"
     |> Sql.executeNonQuery
     |> ignore
 
@@ -118,68 +141,83 @@ let readShapePoints (archive: ZipArchive) (connection: NpgsqlConnection) =
     connection
 
 let readCalendarDates (archive: ZipArchive) (connection: NpgsqlConnection) =
-    use calendarDates = archive.GetEntry("calendar_dates.txt").Open() |> CsvFile.Load
-    let today = DateTime.Today.ToString("yyyyMMdd")
-    let tomorrow = DateTime.Today.AddDays(1).ToString("yyyyMMdd")
+    let calendarDates = archive.GetEntry("calendar_dates.txt") |> entryLineStream
 
-    for dateEntry in calendarDates.Rows do
-        let date = dateEntry.GetColumn("date")
+    use writer =
+        connection.BeginTextImport "COPY GTFS_CALENDAR_DATES FROM STDIN DELIMITER ','"
 
-        if date = today || date = tomorrow then
-            connection
-            |> Sql.existingConnection
-            |> Sql.query "INSERT INTO CALENDAR_DATES(serviceId, date) VALUES(@sid, @d)"
-            |> Sql.parameters
-                [ "@sid", dateEntry.GetColumn("service_id") |> Sql.text
-                  "@d", date |> Sql.text ]
-            |> Sql.executeNonQuery
-            |> ignore
+    for line in calendarDates |> Seq.skip 1 do
+        writer.WriteLine(line)
 
     connection
 
 let readTrips (archive: ZipArchive) (connection: NpgsqlConnection) =
-    use trips = archive.GetEntry("trips.txt").Open() |> CsvFile.Load
+    let trips = archive.GetEntry("trips.txt") |> entryLineStream
 
-    let headers = trips.Headers.Value
-    let haveHeadSigns = Array.contains "trip_headsign" headers
-    let haveShortNames = Array.contains "trip_short_name" headers
-    let haveShapes = Array.contains "shape_id" headers
+    use writer = connection.BeginTextImport "COPY GTFS_TRIP FROM STDIN DELIMITER ','"
 
-    for trip in trips.Rows do
-        let insert =
-            connection
-            |> Sql.existingConnection
-            |> Sql.query "SELECT (COUNT(serviceId) = 1) as exist FROM CALENDAR_DATES WHERE serviceId = @sid"
-            |> Sql.parameters [ "sid", trip.GetColumn("service_id") |> Sql.text ]
-            |> Sql.executeRow (fun r -> r.bool "exist")
+    for line in trips |> Seq.skip 1 do
+        writer.WriteLine(line)
 
-        if insert then
-            connection
-            |> Sql.existingConnection
-            |> Sql.query
-                "INSERT INTO TRIP(tripId, tripHeadSign, tripShortName, tripDirection, routeId, shapedId) VALUES (@tid, @ths, @tsn, @td, @ri, @si)"
-            |> Sql.parameters
-                [ "@tid", trip.GetColumn("trip_id") |> Sql.text
-                  "@ths",
-                  if haveHeadSigns then
-                      trip.GetColumn("trip_headsign") |> Sql.text
-                  else
-                      Sql.dbnull
-                  "@tsn",
-                  if haveShortNames then
-                      trip.GetColumn("trip_short_name") |> Sql.text
-                  else
-                      Sql.dbnull
-                  "@td",
-                  NpgsqlParameter(null, enum<TripDirection> (int (trip.GetColumn("direction_id"))))
-                  |> Sql.parameter
-                  "@ri", trip.GetColumn("route_id") |> Sql.text
-                  "@si",
-                  if haveShapes then
-                      trip.GetColumn("shape_id") |> Sql.text
-                  else
-                      Sql.dbnull ]
-            |> Sql.executeNonQuery
-            |> ignore
+    connection
+
+let readStopTimes (archive: ZipArchive) (connection: NpgsqlConnection) =
+    let stopTimes = archive.GetEntry("stop_times.txt") |> entryLineStream
+
+    use writer =
+        connection.BeginTextImport "COPY GTFS_STOP_TIMES FROM STDIN DELIMITER ','"
+
+    for line in stopTimes |> Seq.skip 1 do
+        writer.WriteLine(line)
+
+    connection
+
+let executeNonQuery query (connection: NpgsqlConnection) =
+    connection |> Sql.existingConnection |> Sql.query query |> Sql.executeNonQuery
+
+let convertData (connection: NpgsqlConnection) =
+    let queryView =
+        """
+CREATE TEMPORARY VIEW VALID_DATES AS
+SELECT service_id, date
+FROM GTFS_CALENDAR_DATES
+WHERE exception_type = 1
+  AND date >= TO_CHAR(CURRENT_DATE, 'yyyyMMdd')
+  AND date < TO_CHAR(CURRENT_DATE + 7, 'yyyyMMdd');
+"""
+
+    connection |> executeNonQuery queryView |> ignore
+
+    let insertTrips =
+        """
+INSERT
+INTO TRIP(tripId, tripDirection, routeId, shapedId)
+SELECT t.trip_id,
+       CASE WHEN t.direction_id = 0 THEN 'one_direction' ELSE 'the_opposite' END::DIRECTION,
+       t.route_id,
+       t.shape_id
+FROM GTFS_TRIP t
+         INNER JOIN VALID_DATES gcd ON gcd.service_id = t.service_id;
+"""
+
+    connection |> executeNonQuery insertTrips |> printfn "Inserted %d trips"
+
+
+    let insertStoppingAt =
+        """
+INSERT
+INTO STOPPING_AT(tripId, stopId, stoppingAtIndex, stoppingAtPredictedTime)
+SELECT st.trip_id,
+       st.stop_id,
+       st.stop_sequence,
+       to_timestamp(gcd.date, 'yyyyMMdd') + justify_interval(st.arrival_time::interval)
+FROM GTFS_STOP_TIMES st
+         INNER JOIN GTFS_TRIP t on st.trip_id = t.trip_id
+         INNER JOIN VALID_DATES gcd ON gcd.service_id = t.service_id
+"""
+
+    connection
+    |> executeNonQuery insertStoppingAt
+    |> printfn "Inserted %d stop times"
 
     connection
